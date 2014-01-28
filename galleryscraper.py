@@ -22,15 +22,16 @@ __version__ = '0.2.0'
 __license__ = 'ISCL'
 __doc__ = """
 Usage:
-  galleryscraper.py URL DIR [--log-level N --quiet]
+  galleryscraper.py URL DIR [--log-level N --quiet --skip-duplicates]
   galleryscraper.py -h | --help | --version
 
 Options:
-  -V, --log-level N   the level of info logged to the console, which can be
-                      one of INFO, DEBUG, or WARNING [default: INFO]
-  -q, --quiet         suppress output to console
-  -v, --version       show program's version number and exit
-  -h, --help          show this help message and exit
+  -V, --log-level N      the level of info logged to the console, which can be
+                         one of INFO, DEBUG, or WARNING [default: INFO]
+  -s, --skip-duplicates  ignore files that have been downloaded already
+  -q, --quiet            suppress output to console
+  -v, --version          show program's version number and exit
+  -h, --help             show this help message and exit
 
 Written by {author}. Licensed under the {license}.
 """.format(author = __author__, license = __license__)
@@ -237,9 +238,9 @@ def find_largest_image_on_page(url):
 
     for link in soup.find_all('img'):
         src = urlparse.urljoin(url, link['src'])
-        is_image, link_dim = image_check(src)
+        is_image, link_dim, link_type = image_check(src)
         if not is_image:
-            logging.debug('Non-image file as source for image at <%s>.', src)
+            logging.debug('Non-image file as source for image at <%s> with content-type <%s>.', src, link_type)
         else:
             logging.debug('Image with content length %d found at <%s>.', link_dim, src)
             if link_dim > dims:
@@ -256,9 +257,11 @@ def image_check(url):
     extension. Often banners on one part of the site will share the same url,
     so we cache the result to save rechecking them.
     """
-    ImageCheckResult = namedtuple('ImageCheckResult', ['is_image', 'bytes'])
+    ImageCheckResult = namedtuple('ImageCheckResult', ['is_image', 'bytes', 'content_type'])
 
     page, size = safe_request(url, type = 'head'), 0
+    if page.status_code != 200:
+        logging.debug('Image request at <%s> returned code <%d>.', url, page.status_code)
 
     # Sometimes, the pages just don't have a content-length; ignore these
     try:
@@ -266,27 +269,31 @@ def image_check(url):
     except KeyError:
         pass
 
-    return ImageCheckResult(True, size) if 'image' in page.headers['content-type'] else ImageCheckResult(False, size)
+    return ImageCheckResult(True, size, page.headers['content-type']) if 'image' in page.headers['content-type'] else ImageCheckResult(False, size, page.headers['content-type'])
 
 
 @cache
-def download_image(url, filename):
+def download_image(url, filename, overwrite = False):
     """
     Downloads the image at the given url and writes it to filename.
     """
     filename += '.' + urlparse.urlparse(url).path.rsplit('.', 1)[1]  # Add the extension
+    if os.path.exists(os.path.abspath(filename)) and not overwrite:
+        logging.debug('File already exists at <%s>. Skipping...', filename)
+        return
 
     logging.info('Downloading image from <%s> to file %s.', url, filename)
 
     req = safe_request(url, stream = True)
-    assert req.status_code == 200
+    if req.status_code != 200:
+        logging.debug('Image request at <%s> returned code <%d>.', url, req.status_code)
 
     with open(filename, 'wb') as f:
         for chunk in req.iter_content(1024):
             f.write(chunk)
 
 
-def scrape_gallery(url, outdir = 'out', include_info = True):
+def scrape_gallery(url, outdir = 'out', include_info = True, overwrite = False):
     """
     Scrapes a web page containing an image gallery, either as full images or in
     the form of thumbnails to be followed. The images are written to disk under
@@ -347,4 +354,4 @@ if __name__ == '__main__':
     _logme('/'.join(['scrape', generate_name_from_url(args['URL'])]), args['--log-level'], console = not args['--quiet'])
 
     # Perform the actual gallery scrape
-    scrape_gallery(args['URL'], 'out/' + args['DIR'])
+    scrape_gallery(args['URL'], 'out/' + args['DIR'], overwrite = args['--skip-duplicates'])
