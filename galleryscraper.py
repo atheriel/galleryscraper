@@ -127,6 +127,10 @@ def _logme(name, level = logging.INFO, console = True):
     Sets up logging at the given level. If console is False, output to STDIN is
     suppressed.
     """
+    # So you can pass 'INFO' instead of 'logging.INFO'
+    if isinstance(level, str):
+        level = getattr(logging, level)
+    
     log_dir = '/tmp/' + name.rsplit('/', 1)[0]
     if not os.path.exists(log_dir):
         os.mkdir(log_dir)
@@ -340,7 +344,7 @@ if __name__ == '__main__':
     args = docopt(__doc__, version = 'galleryscraper.py version: %s' % __version__)
 
     # Set up some logging
-    _logme('/'.join(['scrape', generate_name_from_url(args['URL'])]), getattr(logging, args['--log-level']), console = not args['--quiet'])
+    _logme('/'.join(['scrape', generate_name_from_url(args['URL'])]), args['--log-level'], console = not args['--quiet'])
 
     # Perform the actual gallery scrape
     scrape_gallery(args['URL'], 'out/' + args['DIR'])
