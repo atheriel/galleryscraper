@@ -86,6 +86,25 @@ def cache(func):
     
     return cached
 
+def safe(func, delay = 10, exceptions = (Exception,), attempts = 5):
+    """
+    Decorator that sleeps the thread for a given delay if the function raises
+    an exception. The exceptions to include and the number of attempts to make
+    before giving up can also be given.
+    """
+    @wraps(func)
+    def safely(*args, **kwargs):
+        for tries in xrange(1, attempts + 1):
+            try:
+                return func(*args, **kwargs)
+            except exceptions as e:
+                if tries < attempts:
+                    logging.info('<%s> raised exception <%s>. Sleeping for 10s before retry.', func.__name__, str(type(e)))
+                    sleep(delay)
+                else:
+                    raise
+    return safely
+
 # Utility functions
 # ---------------------------
 
@@ -157,20 +176,15 @@ def _logme(name, level = logging.INFO, console = True):
         console.setLevel(level)
 
 @sessional
+@safe
 def safe_request(url, type = 'get', session = None, **kwargs):
     """
     Wraps requests to retry after a timeout. This is quite useful, since many
     people do not like web scrapers, and drop the connection if they receive
     rapid get requests.
     """
-    assert session is not None
-    try:
-        return getattr(session, type)(url, timeout = 3.0, **kwargs)
-    except Exception as e:
-        logging.info('Request timeout for <%s> with exception <%s>. Sleeping for 10s before retry.', url, str(e))
-        sleep(10)
-        return safe_request(url, type, **kwargs)
-
+    assert isinstance(session, requests.Session)
+    return getattr(session, type)(url, timeout = 3.0, **kwargs)
 
 # Parser functions
 # ---------------------------
@@ -282,7 +296,7 @@ def download_image(url, filename, overwrite = False):
     """
     filename += '.' + urlparse.urlparse(url).path.rsplit('.', 1)[1]  # Add the extension
     if os.path.exists(os.path.abspath(filename)) and not overwrite:
-        logging.debug('File already exists at <%s>. Skipping...', filename)
+        logging.info('File already exists at <%s>. Skipping...', filename)
         return
 
     logging.info('Downloading image from <%s> to file %s.', url, filename)
@@ -328,11 +342,11 @@ def scrape_gallery(url, outdir = 'out', include_info = True, overwrite = False, 
         index = arg[0]
         candidate = arg[1]
         if image_check(candidate).is_image:
-            download_image(candidate, '-'.join([filename_prefix, str(index)]))
+            download_image(candidate, '-'.join([filename_prefix, str(index)]), overwrite)
         else:
             logging.info('Finding largest image on <%s>...', candidate)
             biggest_image = find_largest_image_on_page(candidate)
-            download_image(biggest_image, '-'.join([filename_prefix, str(index)]))
+            download_image(biggest_image, '-'.join([filename_prefix, str(index)]), overwrite)
 
     # Threading. Vroom, vroom.
     pool = ThreadPool(threads)
@@ -342,6 +356,7 @@ def scrape_gallery(url, outdir = 'out', include_info = True, overwrite = False, 
 
     # Create info header and write it to a text file
     if include_info:
+        logging.info('Writing gallery data to disk.')
         info_dict = {}
         open_as = 'w'
         
@@ -368,4 +383,4 @@ if __name__ == '__main__':
     _logme('/'.join(['scrape', generate_name_from_url(args['URL'])]), args['--log-level'], console = not args['--quiet'])
 
     # Perform the actual gallery scrape
-    scrape_gallery(args['URL'], 'out/' + args['DIR'], overwrite = args['--skip-duplicates'], threads = int(args['--threads']))
+    scrape_gallery(args['URL'], 'out/' + args['DIR'], overwrite = not args['--skip-duplicates'], threads = int(args['--threads']))
