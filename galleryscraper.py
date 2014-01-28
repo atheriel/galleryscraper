@@ -1,47 +1,171 @@
 # Standard library modules
 import os
 import os.path
-import time
 import sys
+import json
 import zlib
 import logging
 import urlparse
-from collections import (namedtuple, defaultdict)
+import datetime
+from collections import namedtuple, defaultdict
+from functools import wraps
 
 # 3rd party modules
 import requests
+from docopt import docopt
 from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
 
-# Internal
-import utils
 
+__author__ = 'Aaron Jacobs <atheriel@gmail.com>'
+__version__ = '0.2.0'
+__license__ = 'ISCL'
+__doc__ = """
+Usage:
+  galleryscraper.py URL DIR [--log-level N --quiet]
+  galleryscraper.py -h | --help | --version
+
+Options:
+  -V, --log-level N   the level of info logged to the console, which can be
+                      one of INFO, DEBUG, or WARNING [default: INFO]
+  -q, --quiet         suppress output to console
+  -v, --version       show program's version number and exit
+  -h, --help          show this help message and exit
+
+Written by {author}. Licensed under the {license}.
+""".format(author = __author__, license = __license__)
+
+
+# Decorators
+# ---------------------------
+
+def sessional(func):
+    """
+    Decorator that maintains the same session for URL requests within the given
+    function. It relies on the wrapped function taking a ``session`` keyword
+    argument. At the moment this is only used for the safe_request function,
+    but if timeouts are not a problem it can be used to wrap all of the other
+    functions that make requests instead.
+    """
+    session = requests.Session()
+    session.mount('http://', HTTPAdapter(max_retries=5))
+    session.headers['User-Agent'] = 'Mozilla/5.0 (Windows; U; Windows NT 5.1; it; rv:1.8.1.11) Gecko/20071127 Firefox/2.0.0.11'
+    
+    @wraps(func)
+    def newfunc(*args, **kwargs):
+        try:
+            # Replace sessions in the function's (kw) arguments
+            kwargs['session'] = session
+        except KeyError:
+            pass
+        return func(*args, **kwargs)
+    
+    return newfunc
+
+def cache(func):
+    """
+    Decorator that caches the results of calls to a function, so that if the
+    same arguments are passed it will simply return the result obtained
+    previously. This is useful when the function is deterministic and somewhat
+    expensive to compute.
+
+    You can obtain the cache for a decorated function from ``func.cache``.
+    """
+    cache = func.cache = {}
+    
+    @wraps(func)
+    def cached(*args, **kwargs):
+        key = str(args) + str(kwargs)
+        if key not in cache:
+            cache[key] = func(*args, **kwargs)
+        return cache[key]
+    
+    return cached
+
+# Utility functions
+# ---------------------------
 
 def generate_name_from_url(url):
     """
     Generate a hexidecimal hash of the page name, so multiple galleries can be
     stored in one folder. Note that this is a deterministic process, so that
-    one may 'retry' a scrape without duplicating images.
+    one may 'retry' a scrape without creating duplicate images.
 
     The number of collisions should be more than low enough for this particular
     application, around 1 in 2^32 - 1.
     """
     return '%4x' % (zlib.crc32(url) & 0xffffffff)
 
+def levenshtein(first, second):
+    """
+    Calculates the Levenshtein distance between two strings.
 
-def safe_request(url, type = 'get', **kwargs):
+    See `Wikipedia`_ for details and the source.
+
+    .. _Wikipedia: http://en.wikibooks.org/wiki/Algorithm_implementation/\
+    Strings/Levenshtein_distance#Python
+    """
+    first = ' ' + first
+    second = ' ' + second
+    d = {}
+    S = len(first)
+    T = len(second)
+    for i in xrange(S):
+        d[i, 0] = i
+    for j in xrange (T):
+        d[0, j] = j
+    for j in xrange(1,T):
+        for i in xrange(1,S):
+            if first[i] == second[j]:
+                d[i, j] = d[i-1, j-1]
+            else:
+                d[i, j] = min(d[i-1, j] + 1, d[i, j-1] + 1, d[i-1, j-1] + 1)
+    return d[S-1, T-1]
+
+def _logme(name, level = logging.INFO, console = True):
+    """
+    Sets up logging at the given level. If console is False, output to STDIN is
+    suppressed.
+    """
+    log_dir = '/tmp/' + name.rsplit('/', 1)[0]
+    if not os.path.exists(log_dir):
+        os.mkdir(log_dir)
+    
+    logging.basicConfig(
+        filename = "/tmp/" + name + ".log",
+        filemode = "w",
+        level = level,
+        format = '[%(asctime)s][%(levelname)s] %(message)s',
+        datefmt = '%y-%m-%d %H:%M:%S'
+    )
+
+    if console:
+        console = logging.StreamHandler()
+        console.setFormatter(logging.Formatter(
+            fmt="[%(asctime)s][%(levelname)s] %(message)s",
+            datefmt="%H:%M:%S")
+        )
+        logging.getLogger().addHandler(console)
+        console.setLevel(level)
+
+@sessional
+def safe_request(url, type = 'get', session = None, **kwargs):
     """
     Wraps requests to retry after a timeout. This is quite useful, since many
     people do not like web scrapers, and drop the connection if they receive
     rapid get requests.
     """
+    assert session is not None
     try:
         return getattr(session, type)(url, timeout = 3.0, **kwargs)
     except Exception as e:
         logging.info('Request timeout for <%s> with exception <%s>. Sleeping for 10s before retry.', url, str(e))
-        time.sleep(10)
+        sys.sleep(10)
         return safe_request(url, type, **kwargs)
 
+
+# Parser functions
+# ---------------------------
 
 def parse_gallery_page(url):
     """
@@ -58,7 +182,7 @@ def parse_gallery_page(url):
     # Sets the page title
     page_title = None
     try:
-        page_title = soup.head.title.contents[0]
+        page_title = soup.head.title.contents[0].strip()
     except Exception:
         logging.info('No page title found.')
 
@@ -71,6 +195,8 @@ def parse_gallery_page(url):
             thumbnail_map[thumb] = source
 
             logging.debug('Thumbnail image found with link to <%s>.', source)
+        elif 'src' not in link:
+            continue
         else:
             source = urlparse.urljoin(url, link['src'])
             images.append(source)
@@ -86,7 +212,7 @@ def parse_gallery_page(url):
 
     for i, line in enumerate(sorted(images)):
         last = clusters[cid][-1]
-        if utils.levenshtein(last, line) > 10:  # Strings are too dissimilar
+        if levenshtein(last, line) > 10:  # Strings are too dissimilar
             cid += 1
         clusters[cid].append(line)
 
@@ -119,7 +245,7 @@ def find_largest_image_on_page(url):
     return biggest_image
 
 
-@utils.cache
+@cache
 def image_check(url):
     """
     Checks if the file at the given url is an image, no matter its actual
@@ -131,12 +257,15 @@ def image_check(url):
     page, size = safe_request(url, type = 'head'), 0
 
     # Sometimes, the pages just don't have a content-length; ignore these
-    with utils.ignored(KeyError):
+    try:
         size = int(page.headers['content-length'])
+    except KeyError:
+        pass
 
     return ImageCheckResult(True, size) if 'image' in page.headers['content-type'] else ImageCheckResult(False, size)
 
 
+@cache
 def download_image(url, filename):
     """
     Downloads the image at the given url and writes it to filename.
@@ -188,21 +317,30 @@ def scrape_gallery(url, outdir = 'out', include_info = True):
 
     # Create info header and write it to a text file
     if include_info:
-        info_text = u'Gallery identifier: %(hash)s\nRetrieved from <%(url)s>\nTitle: %(title)s\nTotal images: %(size)d\n\n'
-        info_text = info_text % {'hash': generate_name_from_url(url), 'url': url, 'size': len(images), 'title': page_title}
+        info_dict = {}
+        open_as = 'w'
+        
+        # Try to avoid redundancy
+        if os.path.exists(os.path.abspath('/'.join([outdir, 'info.txt']))):
+            with open('/'.join([outdir, 'info.txt']), 'r') as f:
+                try:
+                    info_dict = json.load(f)
+                except ValueError:  # Probably failed to decode json
+                    open_as = 'a'
+                    logging.info('Failed to open info file. Appending new content without redundancy checks.')
+        
+        info_dict[generate_name_from_url(url)]  = {'url': url, 'size': len(images), 'title': page_title, 'updated': datetime.datetime.now().isoformat()}
+        
+        with open('/'.join([outdir, 'info.txt']), open_as) as f:
+            f.write(json.dumps(info_dict, indent=4).encode('utf-8'))
 
-        with open('/'.join([outdir, 'info.txt']), 'a') as f:
-            f.write(info_text.encode('utf-8'))
+    logging.info('Finished scraping <%s>.', url)
 
-url = sys.argv[1]
-custom_dir = sys.argv[2]
-session = requests.Session()
-session.mount('http://', HTTPAdapter(max_retries=5))
-session.headers['User-Agent'] = 'Mozilla/5.0 (Windows; U; Windows NT 5.1; it; rv:1.8.1.11) Gecko/20071127 Firefox/2.0.0.11'
+if __name__ == '__main__':
+    args = docopt(__doc__, version = 'galleryscraper.py version: %s' % __version__)
 
-# Set up some logging
-# Use logging.DEBUG to, well, debug
-# Use console = True to see output on the console
-utils.logme('/'.join(['scrape', generate_name_from_url(url)]), logging.INFO, console = False)
+    # Set up some logging
+    _logme('/'.join(['scrape', generate_name_from_url(args['URL'])]), getattr(logging, args['--log-level']), console = not args['--quiet'])
 
-scrape_gallery(url, 'out/' + custom_dir)
+    # Perform the actual gallery scrape
+    scrape_gallery(args['URL'], 'out/' + args['DIR'])
