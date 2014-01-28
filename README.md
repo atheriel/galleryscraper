@@ -7,12 +7,14 @@ The code is very well documented. I wrote it primarily to learn something about 
 ## Usage
 
 	Usage:
-	  galleryscraper.py URL DIR [--log-level N --quiet]
+	  galleryscraper.py URL DIR [--threads N --log-level N --quiet --skip-duplicates]
 	  galleryscraper.py -h | --help | --version
 
 	Options:
-	  -V, --log-level N   the level of info logged to the console, which can be
-	                      one of INFO, DEBUG, or WARNING [default: INFO]
-	  -q, --quiet         suppress output to console
-	  -v, --version       show program's version number and exit
-	  -h, --help          show this help message and exit
+	      --threads N        the number of threads to use [default: 4]
+	  -V, --log-level N      the level of info logged to the console, which can be
+	                         one of INFO, DEBUG, or WARNING [default: INFO]
+	  -s, --skip-duplicates  ignore files that have been downloaded already
+	  -q, --quiet            suppress output to console
+	  -v, --version          show program's version number and exit
+	  -h, --help             show this help message and exit
