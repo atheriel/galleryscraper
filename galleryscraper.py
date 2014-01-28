@@ -6,8 +6,8 @@ import json
 import zlib
 import logging
 import urlparse
-import datetime
 from collections import namedtuple, defaultdict
+from datetime import datetime
 from functools import wraps
 
 # 3rd party modules
@@ -333,7 +333,7 @@ def scrape_gallery(url, outdir = 'out', include_info = True):
                     open_as = 'a'
                     logging.info('Failed to open info file. Appending new content without redundancy checks.')
         
-        info_dict[generate_name_from_url(url)]  = {'url': url, 'size': len(images), 'title': page_title, 'updated': datetime.datetime.now().isoformat()}
+        info_dict[generate_name_from_url(url)]  = {'url': url, 'size': len(images), 'title': page_title, 'updated': datetime.now().isoformat()}
         
         with open('/'.join([outdir, 'info.txt']), open_as) as f:
             f.write(json.dumps(info_dict, indent=4).encode('utf-8'))
