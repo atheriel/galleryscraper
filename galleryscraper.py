@@ -6,9 +6,11 @@ import json
 import zlib
 import logging
 import urlparse
+from multiprocessing.dummy import Pool as ThreadPool
 from collections import namedtuple, defaultdict
 from datetime import datetime
 from functools import wraps
+from time import sleep
 
 # 3rd party modules
 import requests
@@ -22,10 +24,11 @@ __version__ = '0.2.0'
 __license__ = 'ISCL'
 __doc__ = """
 Usage:
-  galleryscraper.py URL DIR [--log-level N --quiet --skip-duplicates]
+  galleryscraper.py URL DIR [--threads N --log-level N --quiet --skip-duplicates]
   galleryscraper.py -h | --help | --version
 
 Options:
+      --threads N        the number of threads to use [default: 4]
   -V, --log-level N      the level of info logged to the console, which can be
                          one of INFO, DEBUG, or WARNING [default: INFO]
   -s, --skip-duplicates  ignore files that have been downloaded already
@@ -165,7 +168,7 @@ def safe_request(url, type = 'get', session = None, **kwargs):
         return getattr(session, type)(url, timeout = 3.0, **kwargs)
     except Exception as e:
         logging.info('Request timeout for <%s> with exception <%s>. Sleeping for 10s before retry.', url, str(e))
-        sys.sleep(10)
+        sleep(10)
         return safe_request(url, type, **kwargs)
 
 
@@ -293,7 +296,7 @@ def download_image(url, filename, overwrite = False):
             f.write(chunk)
 
 
-def scrape_gallery(url, outdir = 'out', include_info = True, overwrite = False):
+def scrape_gallery(url, outdir = 'out', include_info = True, overwrite = False, threads = 2):
     """
     Scrapes a web page containing an image gallery, either as full images or in
     the form of thumbnails to be followed. The images are written to disk under
@@ -311,20 +314,31 @@ def scrape_gallery(url, outdir = 'out', include_info = True, overwrite = False):
     filename_prefix = '/'.join([outdir, generate_name_from_url(url)])
     logging.info('Filename prefix: %s', filename_prefix)
 
-    for count, link in enumerate(images):
+    # Work out whether to follow thumbnail links
+    candidates = []
+    for index, image in enumerate(images):
         try:
-            parent = thumbnail_map[link]
-
-            if image_check(parent).is_image:
-                download_image(parent, '-'.join([filename_prefix, str(count)]))
-                continue
-
-            logging.info('Finding largest image on <%s>...', parent)
-            biggest_image = find_largest_image_on_page(parent)
-            download_image(biggest_image, '-'.join([filename_prefix, str(count)]))
-
+            candidates.append((index, thumbnail_map[image]))
         except KeyError:  # It's not a thumbnail
-            download_image(link, '-'.join([filename_prefix, str(count)]))
+            candidates.append((index, image))
+    assert len(candidates) == len(images)
+
+    # The function that handles downloading images/finding, etc.
+    def get_image(arg):
+        index = arg[0]
+        candidate = arg[1]
+        if image_check(candidate).is_image:
+            download_image(candidate, '-'.join([filename_prefix, str(index)]))
+        else:
+            logging.info('Finding largest image on <%s>...', candidate)
+            biggest_image = find_largest_image_on_page(candidate)
+            download_image(biggest_image, '-'.join([filename_prefix, str(index)]))
+
+    # Threading. Vroom, vroom.
+    pool = ThreadPool(threads)
+    pool.map(get_image, candidates)
+    pool.close()
+    pool.join()
 
     # Create info header and write it to a text file
     if include_info:
@@ -354,4 +368,4 @@ if __name__ == '__main__':
     _logme('/'.join(['scrape', generate_name_from_url(args['URL'])]), args['--log-level'], console = not args['--quiet'])
 
     # Perform the actual gallery scrape
-    scrape_gallery(args['URL'], 'out/' + args['DIR'], overwrite = args['--skip-duplicates'])
+    scrape_gallery(args['URL'], 'out/' + args['DIR'], overwrite = args['--skip-duplicates'], threads = int(args['--threads']))
